@@ -24,6 +24,33 @@ pub fn is_foreground_daemon() -> bool {
     IS_FOREGROUND_DAEMON.load(Ordering::Relaxed)
 }
 
+/// True once an embedder has disabled all daemon IPC for this process
+/// (see [`disable_daemon_ipc`]). Mirrors "no daemon on this machine"
+/// semantics: every daemon interaction — discovery, connect-only requests,
+/// and the CLI's auto-start — behaves exactly as if no daemon existed.
+static DAEMON_IPC_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Disable all communication with the machine-wide daemon for this process.
+///
+/// Embedder contract (Milou, MILOU-136): called once at process start, before
+/// the first engine or session exists. One-way by design — no re-enable.
+/// After the call:
+/// - [`is_daemon_running`] answers `false`, so connect-only paths (delivery,
+///   cross-agent cache, index nudge) skip before touching the socket;
+/// - [`daemon_client::daemon_request`] refuses even when a daemon is alive
+///   and discoverable (its socket path comes from `dirs::data_local_dir()`,
+///   which no environment variable of this crate governs on macOS);
+/// - [`start_daemon`] refuses, so the auto-start path can never spawn one.
+pub fn disable_daemon_ipc() {
+    DAEMON_IPC_DISABLED.store(true, Ordering::Relaxed);
+}
+
+/// Whether [`disable_daemon_ipc`] has been called for this process.
+#[must_use]
+pub fn daemon_ipc_disabled() -> bool {
+    DAEMON_IPC_DISABLED.load(Ordering::Relaxed)
+}
+
 fn data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
@@ -39,6 +66,9 @@ pub fn daemon_addr() -> ipc::DaemonAddr {
 }
 
 pub fn is_daemon_running() -> bool {
+    if daemon_ipc_disabled() {
+        return false;
+    }
     let pid_path = daemon_pid_path();
     let Ok(contents) = fs::read_to_string(&pid_path) else {
         return false;
@@ -92,6 +122,9 @@ fn acquire_start_lock() -> Option<fs::File> {
 }
 
 pub fn start_daemon(args: &[String]) -> Result<()> {
+    if daemon_ipc_disabled() {
+        anyhow::bail!("daemon IPC disabled by embedder; refusing to start a daemon");
+    }
     // Held for the whole critical section; released when `_start_lock` drops.
     let _start_lock = acquire_start_lock();
 

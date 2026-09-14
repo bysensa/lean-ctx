@@ -49,6 +49,10 @@ where
 pub async fn daemon_request(method: &str, path: &str, body: &str) -> Result<String> {
     use tokio::time::timeout;
 
+    if crate::daemon::daemon_ipc_disabled() {
+        anyhow::bail!("daemon IPC disabled by embedder");
+    }
+
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
     const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
