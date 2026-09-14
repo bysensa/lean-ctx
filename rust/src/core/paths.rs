@@ -29,6 +29,7 @@
 //! no timestamps, counters or randomness.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use super::data_dir::{ensure_dir_permissions, has_data_files, lean_ctx_data_dir};
 
@@ -39,6 +40,55 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+}
+
+/// Embedder-provided directory layout for the four typed categories.
+///
+/// Set once from code — the structural equivalent of the
+/// `LEAN_CTX_<CATEGORY>_DIR` environment variables, for hosts that must not
+/// manipulate the process environment (Milou, MILOU-137). Highest priority:
+/// it wins over every environment variable and over legacy/mixed-install
+/// back-compat resolution, so an embedder's run tree is authoritative.
+#[derive(Debug, Clone)]
+pub struct DirOverrides {
+    /// Config category: `config.toml`, hooks, env.sh.
+    pub config: PathBuf,
+    /// Data category: sessions, vectors, graphs, knowledge, archives.
+    pub data: PathBuf,
+    /// State category: events, stats, logs, journals, ledgers, `daemon.pid`.
+    pub state: PathBuf,
+    /// Cache category: semantic cache, models, learned patterns.
+    pub cache: PathBuf,
+}
+
+static DIR_OVERRIDES: OnceLock<DirOverrides> = OnceLock::new();
+
+/// Install [`DirOverrides`] for this process. Returns `false` if already set.
+///
+/// Set-once by design: the layout of a process is decided at startup, before
+/// the first engine or session exists, and there is no way to unset it.
+pub fn set_dir_overrides(overrides: DirOverrides) -> bool {
+    DIR_OVERRIDES.set(overrides).is_ok()
+}
+
+/// The installed [`DirOverrides`], if any.
+#[must_use]
+pub fn dir_overrides() -> Option<&'static DirOverrides> {
+    DIR_OVERRIDES.get()
+}
+
+/// The override for a category, keyed by its environment-variable name so the
+/// existing [`category_dir`] call sites need no signature change.
+fn overridden_category(cat_env: &str) -> Option<PathBuf> {
+    let overrides = dir_overrides()?;
+    let dir = match cat_env {
+        "LEAN_CTX_CONFIG_DIR" => &overrides.config,
+        "LEAN_CTX_STATE_DIR" => &overrides.state,
+        "LEAN_CTX_CACHE_DIR" => &overrides.cache,
+        _ => return None,
+    };
+    ensure_dir_permissions(dir);
+    Some(dir.clone())
 }
 
 /// Resolves an XDG base directory (e.g. `~/.config`), honoring the `env_name`
@@ -153,6 +203,9 @@ fn single_dir_override_fs(
 // fallible XDG resolution only runs in real builds.
 #[cfg_attr(test, allow(clippy::unnecessary_wraps))]
 fn category_dir(cat_env: &str, xdg_env: &str, home_fallback: &str) -> Result<PathBuf, String> {
+    if let Some(dir) = overridden_category(cat_env) {
+        return Ok(dir);
+    }
     let category_override = env_path(cat_env);
 
     // A category override always wins, even under #[cfg(test)] — this lets the
@@ -283,6 +336,9 @@ pub fn cache_dir() -> Result<PathBuf, String> {
 /// [`state_dir`] so runtime files stay in a private, writable, non-config path
 /// rather than a world-readable temp location.
 pub fn runtime_dir() -> Result<PathBuf, String> {
+    if let Some(overrides) = dir_overrides() {
+        return Ok(overrides.state.clone());
+    }
     if let Some(base) = env_path("XDG_RUNTIME_DIR") {
         return Ok(base.join("lean-ctx"));
     }

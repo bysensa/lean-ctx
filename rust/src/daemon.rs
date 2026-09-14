@@ -52,6 +52,13 @@ pub fn daemon_ipc_disabled() -> bool {
 }
 
 fn data_dir() -> PathBuf {
+    // Embedder layout (Milou, MILOU-137): the daemon's pid and socket live
+    // under the run's state category — the same place
+    // [`crate::core::paths::runtime_dir`] documents for them when
+    // `XDG_RUNTIME_DIR` is unset, and the upstream half of MILOU-128.
+    if let Some(overrides) = crate::core::paths::dir_overrides() {
+        return overrides.state.clone();
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
         .join("lean-ctx")

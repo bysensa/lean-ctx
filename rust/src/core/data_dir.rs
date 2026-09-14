@@ -22,6 +22,13 @@ const DATA_MARKERS: &[&str] = &["stats.json", "sessions", "vectors", "graphs", "
 /// An empty `~/.lean-ctx/` directory does NOT trigger legacy mode — this prevents
 /// data directory splits when setup creates the dir before MCP writes stats.
 pub fn lean_ctx_data_dir() -> Result<PathBuf, String> {
+    // The embedder's structural override wins over every environment variable:
+    // a host that injects its layout from code must not be steered by an
+    // ambient `LEAN_CTX_DATA_DIR` (Milou, MILOU-137).
+    if let Some(overrides) = crate::core::paths::dir_overrides() {
+        ensure_dir_permissions(&overrides.data);
+        return Ok(overrides.data.clone());
+    }
     if let Ok(dir) = std::env::var("LEAN_CTX_DATA_DIR") {
         let trimmed = dir.trim();
         if !trimmed.is_empty() {

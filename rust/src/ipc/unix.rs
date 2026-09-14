@@ -3,6 +3,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 fn data_dir() -> PathBuf {
+    // Embedder layout (Milou, MILOU-137): the socket follows the run's state
+    // category, mirroring `daemon.rs::data_dir` — see MILOU-128.
+    if let Some(overrides) = crate::core::paths::dir_overrides() {
+        return overrides.state.clone();
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
         .join("lean-ctx")
