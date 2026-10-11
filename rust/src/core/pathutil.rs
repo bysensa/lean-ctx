@@ -306,13 +306,59 @@ pub const PROJECT_MARKERS: &[&str] = &[
     ".planning",
 ];
 
-/// Returns `true` if `dir` contains at least one known project marker.
+/// Directories the embedding application declared to be project roots
+/// ([`declare_project_root`]): canonical paths, only ever added to.
+static DECLARED_PROJECT_ROOTS: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Vec::new());
+
+/// Declares `root` a project root for the rest of the process, as if it carried
+/// a project marker: [`has_project_marker`] answers `true` for it without
+/// touching the filesystem.
+///
+/// For embedders that open an engine on a directory the user chose — an empty
+/// folder, a notes directory — and must keep the path jail there. Without a
+/// marker the server treats such a root as a stray working directory: it
+/// re-roots the session to the first marked project an absolute path reaches
+/// (`tools/server_paths.rs`, `maybe_reroot_for_absolute_path`), and the scan
+/// guard refuses to index or walk it when it is a direct child of the home
+/// directory (`core/graph_index`, `is_safe_scan_root`). A declared root counts
+/// as a real project in both places, exactly as one with a `.lean-ctx.toml`.
+///
+/// Broad roots stay broad: [`is_broad_or_unsafe_root`] does not consult the
+/// declaration, so declaring `$HOME` or `/` does not make either a real
+/// project. The path is canonicalized first; one that cannot be is declared as
+/// given.
+pub fn declare_project_root(root: &Path) {
+    let root = safe_canonicalize_or_self(root);
+    let mut roots = DECLARED_PROJECT_ROOTS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !roots.contains(&root) {
+        roots.push(root);
+    }
+}
+
+/// Whether `dir` — as given or canonical — was declared a project root.
+fn is_declared_project_root(dir: &Path) -> bool {
+    let roots = DECLARED_PROJECT_ROOTS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if roots.is_empty() {
+        return false;
+    }
+    roots.iter().any(|root| root == dir) || roots.contains(&safe_canonicalize_or_self(dir))
+}
+
+/// Returns `true` if `dir` contains at least one known project marker, or was
+/// declared a project root by the embedder ([`declare_project_root`]).
 ///
 /// TCC guard (#356): a launchd-owned process (daemon/proxy/auto-updater) must
 /// not stat marker files under `~/Documents` & co. — the probe itself pops the
 /// macOS privacy prompt. For those processes this conservatively reports
 /// "no marker" without touching the filesystem.
 pub fn has_project_marker(dir: &Path) -> bool {
+    if is_declared_project_root(dir) {
+        return true;
+    }
     if !may_probe_path(dir) {
         return false;
     }
